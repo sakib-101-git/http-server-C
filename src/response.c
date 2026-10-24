@@ -14,6 +14,23 @@
 #include "response.h"
 #include "server.h"
 
+/*
+ * Send the whole buffer. A single write()/send() may accept fewer bytes than
+ * requested, so keep going until everything is out. Returns 0 on success,
+ * -1 if the socket fails (e.g. the client disconnected).
+ */
+static int send_all(int fd, const char *buf, size_t len) {
+    while (len > 0) {
+        long n = (long)write_socket(fd, buf, len);
+        if (n <= 0) {
+            return -1;
+        }
+        buf += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
 /* Map a file extension to a MIME type for the Content-Type header. */
 static const char *mime_type(const char *path) {
     const char *dot = strrchr(path, '.');
@@ -50,8 +67,9 @@ void send_error(int client_fd, int status_code, const char *status_text) {
         "\r\n",
         status_code, status_text, body_len);
 
-    write_socket(client_fd, header, header_len);
-    write_socket(client_fd, body, body_len);
+    if (send_all(client_fd, header, (size_t)header_len) == 0) {
+        send_all(client_fd, body, (size_t)body_len);
+    }
 }
 
 /*
@@ -91,7 +109,7 @@ void handle_request(int client_fd, const HttpRequest *req, const char *web_root)
 
     /* Determine the file size for the Content-Length header. */
     struct stat st;
-    if (stat(filepath, &st) != 0) {
+    if (stat(filepath, &st) != 0 || !S_ISREG(st.st_mode)) {
         fclose(fp);
         send_error(client_fd, 404, "Not Found");
         return;
@@ -107,13 +125,18 @@ void handle_request(int client_fd, const HttpRequest *req, const char *web_root)
         "\r\n",
         mime_type(filepath), content_length);
 
-    write_socket(client_fd, header, header_len);
+    if (send_all(client_fd, header, (size_t)header_len) != 0) {
+        fclose(fp);
+        return;
+    }
 
     /* Stream the file body in chunks. */
     char buffer[BUFFER_SIZE];
     size_t bytes_read;
     while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
-        write_socket(client_fd, buffer, bytes_read);
+        if (send_all(client_fd, buffer, bytes_read) != 0) {
+            break;
+        }
     }
 
     fclose(fp);

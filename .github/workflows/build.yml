@@ -1,0 +1,16 @@
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make CFLAGS="-Wall -Wextra -Werror -std=c11 -O2"
+      - name: Smoke test
+        run: |
+          ./http-server &
+          sleep 1
+          curl -fsS http://localhost:8080/ > /dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/missing)" = 404
